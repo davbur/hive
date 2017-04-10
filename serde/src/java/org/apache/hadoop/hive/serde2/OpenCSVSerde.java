@@ -30,6 +30,9 @@ import org.apache.hadoop.io.Writable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Splitter;
+import com.google.common.collect.Lists;
+
 import java.io.CharArrayReader;
 import java.io.IOException;
 import java.io.Reader;
@@ -51,8 +54,9 @@ import au.com.bytecode.opencsv.CSVWriter;
  */
 @SerDeSpec(schemaProps = {
     serdeConstants.LIST_COLUMNS,
-    OpenCSVSerde.SEPARATORCHAR, OpenCSVSerde.QUOTECHAR, OpenCSVSerde.ESCAPECHAR})
-public final class OpenCSVSerde extends AbstractSerDe {
+    OpenCSVSerde.SEPARATORCHAR, OpenCSVSerde.QUOTECHAR, OpenCSVSerde.ESCAPECHAR,
+    OpenCSVSerde.LIST_COLUMN_COMMENTS})
+public final class OpenCSVSerde extends AbstractEncodingAwareSerDe {
 
   public static final Logger LOG = LoggerFactory.getLogger(OpenCSVSerde.class.getName());
   private ObjectInspector inspector;
@@ -67,12 +71,27 @@ public final class OpenCSVSerde extends AbstractSerDe {
   public static final String SEPARATORCHAR = "separatorChar";
   public static final String QUOTECHAR = "quoteChar";
   public static final String ESCAPECHAR = "escapeChar";
+  public static final String LIST_COLUMN_COMMENTS = "columns.comments";
 
   @Override
   public void initialize(final Configuration conf, final Properties tbl) throws SerDeException {
+    
+    super.initialize(conf, tbl);
 
     final List<String> columnNames = Arrays.asList(tbl.getProperty(serdeConstants.LIST_COLUMNS)
         .split(","));
+    final String columnCommentProperty = tbl.getProperty(LIST_COLUMN_COMMENTS,"");
+
+    List<String> columnComments = null;
+    if (columnCommentProperty != null && !columnCommentProperty.isEmpty()) {
+      //Comments are separated by "\0" in columnCommentProperty, see method getSchema
+      //in MetaStoreUtils where this string columns.comments is generated
+      columnComments = Lists.newArrayList(Splitter.on('\0').split(columnCommentProperty));
+
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("columnComments is " + columnCommentProperty);
+      }
+    }
 
     numCols = columnNames.size();
 
@@ -82,7 +101,8 @@ public final class OpenCSVSerde extends AbstractSerDe {
       columnOIs.add(PrimitiveObjectInspectorFactory.javaStringObjectInspector);
     }
 
-    inspector = ObjectInspectorFactory.getStandardStructObjectInspector(columnNames, columnOIs);
+    inspector = ObjectInspectorFactory.getStandardStructObjectInspector(
+        columnNames, columnOIs, columnComments);
     outputFields = new String[numCols];
     row = new ArrayList<String>(numCols);
 
@@ -106,7 +126,7 @@ public final class OpenCSVSerde extends AbstractSerDe {
   }
 
   @Override
-  public Writable serialize(Object obj, ObjectInspector objInspector) throws SerDeException {
+  public Writable doSerialize(Object obj, ObjectInspector objInspector) throws SerDeException {
     final StructObjectInspector outputRowOI = (StructObjectInspector) objInspector;
     final List<? extends StructField> outputFieldRefs = outputRowOI.getAllStructFieldRefs();
 
@@ -142,8 +162,8 @@ public final class OpenCSVSerde extends AbstractSerDe {
   }
 
   @Override
-  public Object deserialize(final Writable blob) throws SerDeException {
-    Text rowText = (Text) blob;
+  public Object doDeserialize(Writable field) throws SerDeException {
+    Text rowText = (Text) field;
 
     CSVReader csv = null;
     try {
@@ -205,4 +225,17 @@ public final class OpenCSVSerde extends AbstractSerDe {
   public SerDeStats getSerDeStats() {
     return null;
   }
+
+  @Override
+  protected Writable transformFromUTF8(Writable blob) {
+    Text text = (Text)blob;
+    return SerDeUtils.transformTextFromUTF8(text, this.charset);
+  }
+
+  @Override
+  protected Writable transformToUTF8(Writable blob) {
+    Text text = (Text)blob;
+    return SerDeUtils.transformTextToUTF8(text, this.charset);
+  }
+
 }
